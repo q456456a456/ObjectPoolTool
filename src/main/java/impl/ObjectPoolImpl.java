@@ -3,10 +3,13 @@ package impl;
 import api.ObjectFactory;
 import api.ObjectPool;
 import api.PooledObject;
+import com.google.common.collect.Maps;
 
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -43,7 +46,7 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         }else{
             this.factory = factory;
         }
-        this.allObjects = new ConcurrentHashMap<>();
+        this.allObjects = Maps.newConcurrentMap();
         this.freeObjects = new LinkedBlockingDeque<>();
         this.createCount = new AtomicLong(0L);
     }
@@ -64,12 +67,36 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     /**借出的逻辑为：
      * 1、检查并回收已借出中闲置的对象
      * 2、从闲置队列中获取
-     * 3、若闲置队列中无对象，则调用create函数，通过工厂产生新的对象。
+     * 3、若闲置队列中无对象，则调用create函数，通过工厂产生新的对象
+     * 4、若创建成功则返回，若不成功则在timeWait时间里阻塞从闲置队列中获取，超时后抛出异常
+     * 5、考虑存在多个线程同时调用的情况，需要保证线程安全
      */
     public T borrowObject(long timeWait) throws Exception {
-        if(this.closed == true)
-            throw new IllegalStateException("");
-        return null;
+        if(this.closed)
+            throw new IllegalStateException("对象池未打开或已关闭！");
+        //当空闲对象只有1个且使用对象数超过可以允许的总对象数-3时，检查并回收已借出中闲置的对象
+        if(freeObjects.size()<2&&allObjects.size()-freeObjects.size()>maxTotal-3)
+            removeAbandoned();
+
+        PooledObject<T> p = null;
+        p = freeObjects.pollFirst();
+        if(p==null){
+            p = create();
+        }
+        if(p==null) {
+            //timeWait<0表示不设置超时时间,会一直阻塞
+            if (timeWait < 0) {
+                p = freeObjects.takeFirst();
+            } else {
+                p = freeObjects.pollFirst(timeWait, TimeUnit.MILLISECONDS);
+            }
+            if(p==null)
+                throw new NoSuchElementException("获取对象超时！");
+        }
+        if(!p.use()){
+            p=null;
+        }
+        return p.getObject();
     }
 
     public boolean returnObject(T obj) throws Exception {
@@ -89,6 +116,10 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     };
     //定时处理闲置队列中闲置过久的对象
     public void evict(){};
+    //创建新的对象
+    public PooledObject<T> create() throws Exception{
+        return null;
+    };
 
     public void close() {
         closed = true;
