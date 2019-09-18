@@ -4,6 +4,7 @@ import api.ObjectFactory;
 import api.ObjectPool;
 import api.PooledObject;
 import com.google.common.collect.Maps;
+import org.apache.log4j.Logger;
 
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -12,10 +13,12 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
+
 /**
  * 用于保存一种给定类型的对象的对象池。
  */
 public class ObjectPoolImpl<T> implements ObjectPool<T> {
+    Logger logger = Logger.getLogger(ObjectPoolImpl.class);
     /**
      * 获取对象时的最长等待时间，单位毫秒，默认为-1，表示一直等待
      */
@@ -49,8 +52,8 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     private final Object makeObjectCountLock;
     /** 已创建对象总数（包含已销毁的）*/
     final AtomicLong createdCount = new AtomicLong(0L);
-//    /** 默认对象存储策略为lifo*/
-//    private boolean lifo = true;
+    /** 默认对象存储策略为lifo*/
+    private boolean lifo = true;
     /**
      * 用于包装对象以放入对象池的工厂
      */
@@ -143,30 +146,78 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
 
     /**
      * 归还的逻辑为：
+     * 1、判断归还的对象是否属于对象池
+     * 2、判断归还的对象状态是否为USED
+     * 3、通过工厂钝化对象（还原对象初始状态等）
+     * 4、判断pool是否关闭或存放空闲对象的队列是否已满
+     * 5、将对象放回空闲对象的队列中
      * 6、考虑存在多个线程同时调用的情况，需要保证线程安全
      */
-    public boolean returnObject(T obj) throws Exception {
-        return false;
+    public void returnObject(T obj) throws Exception {
+        PooledObject<T> p = this.allObjects.get(obj);
+        //归还的对象不属于对象池
+        if(p==null)
+            throw new NoSuchElementException("归还的对象不属于这个对象池！");
+        //判断归还的对象状态不为USED
+        if(this.allObjects.get(obj).getState()!=PooledObjectState.USED)
+            throw new IllegalStateException("对象已归还或出现其他未知错误！");
+        //钝化
+        try{
+            factory.passivateObject(p);
+        }catch (Exception e){
+            this.destroy(p);
+        }
+        if(!p.giveBack()){
+            throw new IllegalStateException("对象已归还或出现其他未知错误！");
+        }
+        //判断pool是否关闭或存放空闲对象的队列是否已满
+        if(this.closed||maxFree<=this.freeObjects.size()){
+            this.destroy(p);
+        }
+        //LIFO策略
+        if(lifo)
+            this.freeObjects.addFirst(p);
+        else
+            this.freeObjects.addLast(p);
+        if (this.closed) {
+            this.clear();
+        }
     }
 
-    public boolean destroyObject(T obj) throws Exception {
-        return false;
+    public void destroyObject(T obj) throws Exception {
+        PooledObject<T> p = this.allObjects.get(obj);
+        if(p==null)
+            throw new IllegalStateException("要销毁的对象不在对象池中！");
+        synchronized (p){
+            this.destroy(p);
+        }
     }
 
-    public boolean addObject(T obj) throws Exception {
-        return false;
+    public void addObject(T obj) throws Exception {
+        if(this.closed)
+            throw new IllegalStateException("对象池未开启或已关闭！");
+        PooledObject<T> p = this.create();
+        if(lifo)
+            this.freeObjects.addFirst(p);
+        else
+            this.freeObjects.addLast(p);
     }
 
     //处理已借出但闲置过久的对象
     public void removeAbandoned() {
     }
 
-    ;
-
     //定时处理闲置队列中闲置过久的对象
     public void evict(){}
+
+
     //销毁创建的对象
-    public void destroy(PooledObject<T> p) throws Exception {}
+    public void destroy(PooledObject<T> p) throws Exception {
+        p.destory();
+        this.freeObjects.remove(p);
+        this.allObjects.remove(p);
+        factory.destroyObject(p);
+    }
     //创建新的对象
     public PooledObject<T> create() throws Exception{
         int localMaxTotal = this.getMaxTotal();   //设置对象池大小，若为负则设为最大整数
@@ -223,6 +274,13 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
 
     public void close() {
         closed = true;
+    }
+
+    public void clear() throws Exception{
+        for(PooledObject p = (PooledObject)this.freeObjects.poll(); p != null; p = (PooledObject)this.freeObjects.poll()) {
+            this.destroy(p);
+        }
+
     }
 
     public long getMaxWaitTime() {

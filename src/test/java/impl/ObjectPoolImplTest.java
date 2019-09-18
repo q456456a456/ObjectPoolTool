@@ -13,6 +13,7 @@ public class ObjectPoolImplTest {
     public void borrowObject() throws Exception{
         ObjectPool<Student> pool = new ObjectPoolImpl<>(new StudentFactory());
         Student s = pool.borrowObject();
+        pool.returnObject(s);
     }
 }
 
