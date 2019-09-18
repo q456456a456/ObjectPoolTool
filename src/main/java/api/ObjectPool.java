@@ -9,13 +9,13 @@ public interface ObjectPool<T> extends Closeable{
     T borrowObject() throws Exception;
 
     /** 使用完对象之后，将其重新添加到对象池中*/
-    boolean returnObject(T obj) throws Exception;
+    void returnObject(T obj) throws Exception;
 
     /** 销毁某一个对象*/
-    boolean destroyObject(T obj) throws Exception;
+    void destroyObject(T obj) throws Exception;
 
     /** 向对象池中添加一个对象*/
-    boolean addObject(T obj) throws Exception;
+    void addObject(T obj) throws Exception;
 
     /** 关闭对象池*/
     void close();
