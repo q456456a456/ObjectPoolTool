@@ -90,6 +90,10 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     //定时处理闲置队列中闲置过久的对象
     public void evict(){};
 
+    private PooledObject<T> create() throws Exception{
+
+    }
+
     public void close() {
         closed = true;
     }
