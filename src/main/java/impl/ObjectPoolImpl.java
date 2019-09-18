@@ -118,8 +118,8 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     public void evict(){};
     //创建新的对象
     public PooledObject<T> create() throws Exception{
-        return null;
-    };
+
+    }
 
     public void close() {
         closed = true;
