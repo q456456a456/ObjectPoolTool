@@ -5,6 +5,7 @@ import api.ObjectPool;
 import api.PooledObject;
 
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -36,16 +37,38 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     private final LinkedBlockingDeque<PooledObject<T>> freeObjects;
 
 
-    public ObjectPoolImpl(){
-        freeObjects = new LinkedBlockingDeque<>();
+    public ObjectPoolImpl(ObjectFactory<T> factory){
+        if(factory==null){
+            throw new IllegalArgumentException("不合法的对象生产工厂！");
+        }else{
+            this.factory = factory;
+        }
+        this.allObjects = new ConcurrentHashMap<>();
+        this.freeObjects = new LinkedBlockingDeque<>();
+        this.createCount = new AtomicLong(0L);
+    }
+    //这里需要做异常处理，防止不合法的time或容量，或maxFree<minFree的情况，底下的set也需要
+    public ObjectPoolImpl(ObjectFactory<T> factory,long maxWaitTime,long destoryTime,int maxFree,int minFree,int maxTotal){
+        this(factory);
+        this.maxWaitTime = maxWaitTime;
+        this.destoryTime = destoryTime;
+        this.maxFree = maxFree;
+        this.minFree = minFree;
+        this.maxTotal = maxTotal;
     }
 
+
+    public T borrowObject() throws Exception {
+        return borrowObject(this.getMaxWaitTime());
+    }
     /**借出的逻辑为：
      * 1、检查并回收已借出中闲置的对象
      * 2、从闲置队列中获取
      * 3、若闲置队列中无对象，则调用create函数，通过工厂产生新的对象。
-    */
-    public T borrowObject() throws Exception {
+     */
+    public T borrowObject(long timeWait) throws Exception {
+        if(this.closed == true)
+            throw new IllegalStateException("");
         return null;
     }
 
@@ -69,5 +92,45 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
 
     public void close() {
         closed = true;
+    }
+
+    public long getMaxWaitTime() {
+        return maxWaitTime;
+    }
+
+    public void setMaxWaitTime(long maxWaitTime) {
+        this.maxWaitTime = maxWaitTime;
+    }
+
+    public long getDestoryTime() {
+        return destoryTime;
+    }
+
+    public void setDestoryTime(long destoryTime) {
+        this.destoryTime = destoryTime;
+    }
+
+    public int getMaxFree() {
+        return maxFree;
+    }
+
+    public void setMaxFree(int maxFree) {
+        this.maxFree = maxFree;
+    }
+
+    public int getMinFree() {
+        return minFree;
+    }
+
+    public void setMinFree(int minFree) {
+        this.minFree = minFree;
+    }
+
+    public int getMaxTotal() {
+        return maxTotal;
+    }
+
+    public void setMaxTotal(int maxTotal) {
+        this.maxTotal = maxTotal;
     }
 }
