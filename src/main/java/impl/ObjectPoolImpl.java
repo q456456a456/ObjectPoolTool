@@ -164,9 +164,17 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     ;
 
     //定时处理闲置队列中闲置过久的对象
-    public void evict(){}
+    public void evict() throws Exception{
+        if (this.closed)
+            throw new IllegalStateException("对象池未打开或已关闭！");
+        if(freeObjects.size()>0){   //闲置队列中有对象
+
+        }
+    }
+
     //销毁创建的对象
     public void destroy(PooledObject<T> p) throws Exception {}
+
     //创建新的对象
     public PooledObject<T> create() throws Exception{
         int localMaxTotal = this.getMaxTotal();   //设置对象池大小，若为负则设为最大整数
@@ -185,17 +193,21 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
                     this.createCount.decrementAndGet();
                     if (this.makeObjectCount == 0L) {    // 无其他线程正在调用makeObject()方法，意味着没有机会再创建对象，只能等待其他对象被归还
                         createFlag = Boolean.FALSE;     // 跳出循环
+                        System.out.println(Thread.currentThread().getName()+"：对象池确认已满，创建失败");
                     } else {   //有其他线程在makeObject()，若它们创建失败，当前线程有机会再次创建，因此先等待
                         this.makeObjectCountLock.wait(localMaxWaitTimeMillis);
+                        System.out.println(Thread.currentThread().getName()+"：对象池暂时满，等待");
                     }
                 } else {              //当前未达到上限
                     ++this.makeObjectCount;
                     createFlag = Boolean.TRUE;
+                    System.out.println(Thread.currentThread().getName()+"：对象池未满，可创建");
                 }
             }
             //如果当前线程不是无限期等待，且等待超时
             if (createFlag == null && localMaxWaitTimeMillis > 0L && System.currentTimeMillis() - localStartTimeMillis >= localMaxWaitTimeMillis) {
                 createFlag = Boolean.FALSE;
+                System.out.println(Thread.currentThread().getName()+"：等待超时，创建失败");
             }
         }
 
@@ -207,14 +219,17 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
                     p = this.factory.createObject();
                 } catch (Throwable e) {
                     this.createCount.decrementAndGet();
+                    System.out.println(Thread.currentThread().getName()+"：创建异常");
                     throw e;
                 } finally {
                     //当前线程创建结束，唤醒其他等待线程
                         synchronized(this.makeObjectCountLock) {
                             --this.makeObjectCount;
                             this.makeObjectCountLock.notifyAll();
+                            System.out.println(Thread.currentThread().getName()+"：当前线程创建结束");
                         }
                 }
+                System.out.println(Thread.currentThread().getName()+"：创建成功");
                 this.createdCount.incrementAndGet();    //将创建总数增加
                 this.allObjects.put(p.getObject(), p);   //将对象放入allObjects
                 return p;
