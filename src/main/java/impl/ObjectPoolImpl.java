@@ -28,8 +28,14 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     private volatile int minFree = 2;
     /** 表示对象池最大对象数量*/
     private volatile int maxTotal = 8;
-    /** 通过工厂已创建的所有对象的个数*/
+    /** 已创建对象总数（不包含已销毁的）*/
     private final AtomicLong createCount;
+    /** 调用创建方法总线程数*/
+    private long makeObjectCount;
+    /** 创建对象时用的锁*/
+    private final Object makeObjectCountLock;
+    /** 已创建对象总数（包含已销毁的）*/
+    final AtomicLong createdCount = new AtomicLong(0L);
 //    /** 默认对象存储策略为lifo*/
 //    private boolean lifo = true;
     /** 用于包装对象以放入对象池的工厂*/
@@ -49,6 +55,8 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         this.allObjects = Maps.newConcurrentMap();
         this.freeObjects = new LinkedBlockingDeque<>();
         this.createCount = new AtomicLong(0L);
+        this.makeObjectCount = 0L;
+        this.makeObjectCountLock = new Object();
     }
     //这里需要做异常处理，防止不合法的time或容量，或maxFree<minFree的情况，底下的set也需要
     public ObjectPoolImpl(ObjectFactory<T> factory,long maxWaitTime,long destoryTime,int maxFree,int minFree,int maxTotal){
@@ -116,10 +124,61 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     };
     //定时处理闲置队列中闲置过久的对象
     public void evict(){};
+
+
     //创建新的对象
     public PooledObject<T> create() throws Exception{
+        int localMaxTotal = this.getMaxTotal();   //设置对象池大小，若为负则设为最大整数
+        if(localMaxTotal < 0){
+            localMaxTotal = Integer.MAX_VALUE;
+        }
+        long localStartTimeMillis = System.currentTimeMillis();   //开始时间
+        long localMaxWaitTimeMillis = Math.max(this.getMaxWaitTime(), 0L);   //MaxWaitTime小于等于0表示无限期等待
+        Boolean createFlag = null;    //是否可以获取对象
 
-    }
+        //以下判断当前线程是否可以创建对象
+        while(createFlag == null){
+            synchronized(this.makeObjectCountLock) {
+                long newCreateCount = this.createCount.incrementAndGet();
+                if (newCreateCount > (long)localMaxTotal) {  //如果这次创建之后超过对象池上限
+                    this.createCount.decrementAndGet();
+                    if (this.makeObjectCount == 0L) {    // 无其他线程正在调用makeObject()方法，意味着没有机会再创建对象，只能等待其他对象被归还
+                        createFlag = Boolean.FALSE;     // 跳出循环
+                    } else {   //有其他线程在makeObject()，若它们创建失败，当前线程有机会再次创建，因此先等待
+                        this.makeObjectCountLock.wait(localMaxWaitTimeMillis);
+                    }
+                } else {              //当前未达到上限
+                    ++this.makeObjectCount;
+                    createFlag = Boolean.TRUE;
+                }
+            }
+            //如果当前线程不是无限期等待，且等待超时
+            if (createFlag == null && localMaxWaitTimeMillis > 0L && System.currentTimeMillis() - localStartTimeMillis >= localMaxWaitTimeMillis) {
+                createFlag = Boolean.FALSE;
+            }
+        }
+
+        if (!createFlag) {  //不可创建对象
+            return null;
+        } else {           //可创建对象
+                PooledObject<T> p;
+                try {
+                    p = this.factory.createObject();
+                } catch (Throwable e) {
+                    this.createCount.decrementAndGet();
+                    throw e;
+                } finally {
+                    //当前线程创建结束，唤醒其他等待线程
+                        synchronized(this.makeObjectCountLock) {
+                            --this.makeObjectCount;
+                            this.makeObjectCountLock.notifyAll();
+                        }
+                }
+                this.createdCount.incrementAndGet();    //将创建总数增加
+                this.allObjects.put(p.getObject(), p);   //将对象放入allObjects
+                return p;
+            }
+        }
 
     public void close() {
         closed = true;
