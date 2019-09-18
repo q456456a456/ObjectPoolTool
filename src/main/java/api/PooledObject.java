@@ -17,5 +17,11 @@ public interface PooledObject<T> {
     boolean giveBack();
     /** 将该对象标记为可销毁的对象*/
     void destory();
+    /** 获取该对象上一次借出时间*/
+    long getLastBorrowTime();
+    /** 获取该对象上一次归还时间*/
+    long getLastReturnTime();
+    /** 获取该对象上一次使用时间*/
+    long getLastUseTime();
 
 }

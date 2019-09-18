@@ -6,6 +6,7 @@ import api.PooledObject;
 
 import java.util.Map;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 用于保存一种给定类型的对象的对象池。
@@ -23,10 +24,10 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     private volatile int minFree = 2;
     /** 表示对象池最大对象数量*/
     private volatile int maxTotal = 8;
-
+    /** 通过工厂已创建的所有对象的个数*/
+    private final AtomicLong createCount;
 //    /** 默认对象存储策略为lifo*/
 //    private boolean lifo = true;
-
     /** 用于包装对象以放入对象池的工厂*/
     private final ObjectFactory<T> factory;
     /** 用于存放对象池中所有对象的Map*/
@@ -39,6 +40,11 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         freeObjects = new LinkedBlockingDeque<>();
     }
 
+    /**借出的逻辑为：
+     * 1、检查并回收已借出中闲置的对象
+     * 2、从闲置队列中获取
+     * 3、若闲置队列中无对象，则调用create函数，通过工厂产生新的对象。
+    */
     public T borrowObject() throws Exception {
         return null;
     }
@@ -54,6 +60,12 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     public boolean addObject(T obj) throws Exception {
         return false;
     }
+
+    //处理已借出但闲置过久的对象
+    public void removeAbandoned(){
+    };
+    //定时处理闲置队列中闲置过久的对象
+    public void evict(){};
 
     public void close() {
         closed = true;
