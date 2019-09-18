@@ -6,8 +6,7 @@ import api.PooledObject;
 import com.google.common.collect.Maps;
 import org.apache.log4j.Logger;
 
-import java.util.Map;
-import java.util.NoSuchElementException;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +27,10 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
      */
     private volatile long destoryTime = -1L;
     /**
+     * 借出对象保持时间，达到此时间后借出对象仍未归还将会被移除，默认为-1表示一直不移除
+     */
+    private volatile long borrowTimeout = -1L;
+    /**
      * 显示对象池是否已关闭的标志
      */
     private volatile boolean closed = false;
@@ -44,15 +47,25 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
      */
     private volatile int maxTotal = 8;
 
-    /** 已创建对象总数（不包含已销毁的）*/
+    /**
+     * 已创建对象总数（不包含已销毁的）
+     */
     private final AtomicLong createCount;
-    /** 调用创建方法总线程数*/
+    /**
+     * 调用创建方法总线程数
+     */
     private long makeObjectCount;
-    /** 创建对象时用的锁*/
+    /**
+     * 创建对象时用的锁
+     */
     private final Object makeObjectCountLock;
-    /** 已创建对象总数（包含已销毁的）*/
+    /**
+     * 已创建对象总数（包含已销毁的）
+     */
     final AtomicLong createdCount = new AtomicLong(0L);
-    /** 默认对象存储策略为lifo*/
+    /**
+     * 默认对象存储策略为lifo
+     */
     private boolean lifo = true;
     /**
      * 用于包装对象以放入对象池的工厂
@@ -82,10 +95,11 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     }
 
     //这里需要做异常处理，防止不合法的time或容量，或maxFree<minFree的情况，底下的set也需要
-    public ObjectPoolImpl(ObjectFactory<T> factory, long maxWaitTime, long destoryTime, int maxFree, int minFree, int maxTotal) {
+    public ObjectPoolImpl(ObjectFactory<T> factory, long maxWaitTime, long destoryTime, long borrowTimeout, int maxFree, int minFree, int maxTotal,long ) {
         this(factory);
         this.maxWaitTime = maxWaitTime;
         this.destoryTime = destoryTime;
+        this.borrowTimeout = borrowTimeout;
         this.maxFree = maxFree;
         this.minFree = minFree;
         this.maxTotal = maxTotal;
@@ -93,6 +107,13 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
 
 
     public T borrowObject() throws Exception {
+        Timer timer = new Timer();
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                evict();
+            }
+        },30*1000);
         return borrowObject(this.getMaxWaitTime());
     }
 
@@ -156,72 +177,94 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     public void returnObject(T obj) throws Exception {
         PooledObject<T> p = this.allObjects.get(obj);
         //归还的对象不属于对象池
-        if(p==null)
+        if (p == null)
             throw new NoSuchElementException("归还的对象不属于这个对象池！");
         //判断归还的对象状态不为USED
-        if(this.allObjects.get(obj).getState()!=PooledObjectState.USED)
+        if (this.allObjects.get(obj).getState() != PooledObjectState.USED)
             throw new IllegalStateException("对象已归还或出现其他未知错误！");
         //钝化
-        try{
+        try {
             factory.passivateObject(p);
-        }catch (Exception e){
+        } catch (Exception e) {
             this.destroy(p);
         }
-        if(!p.giveBack()){
+        if (!p.giveBack()) {
             throw new IllegalStateException("对象已归还或出现其他未知错误！");
         }
         //判断pool是否关闭或存放空闲对象的队列是否已满
-        if(this.closed||maxFree<=this.freeObjects.size()){
+        if (this.closed || maxFree <= this.freeObjects.size()) {
             this.destroy(p);
-        }
-        //LIFO策略
-        if(lifo)
-            this.freeObjects.addFirst(p);
-        else
-            this.freeObjects.addLast(p);
-        if (this.closed) {
-            this.clear();
+        } else {
+            //LIFO策略
+            if (lifo)
+                this.freeObjects.addFirst(p);
+            else
+                this.freeObjects.addLast(p);
+            if (this.closed) {
+                this.clear();
+            }
         }
     }
 
     public void destroyObject(T obj) throws Exception {
         PooledObject<T> p = this.allObjects.get(obj);
-        if(p==null)
+        if (p == null)
             throw new IllegalStateException("要销毁的对象不在对象池中！");
-        synchronized (p){
+        synchronized (p) {
             this.destroy(p);
         }
     }
 
     public void addObject(T obj) throws Exception {
-        if(this.closed)
+        if (this.closed)
             throw new IllegalStateException("对象池未开启或已关闭！");
         PooledObject<T> p = this.create();
-        if(lifo)
+        if (lifo)
             this.freeObjects.addFirst(p);
         else
             this.freeObjects.addLast(p);
     }
 
     //处理已借出但闲置过久的对象
-    public void removeAbandoned() {
+    public void removeAbandoned() throws Exception{
+        if (this.borrowTimeout < 0)
+            return;
+        ArrayList<PooledObject<T>> removeList = new ArrayList();
+        Iterator it = this.allObjects.values().iterator();
+        while (it.hasNext()) {
+            PooledObject<T> pooledObject = (PooledObject) it.next();
+            synchronized (pooledObject){
+                if (pooledObject.getState()==PooledObjectState.USED&&System.currentTimeMillis()-pooledObject.getLastUseTime()>borrowTimeout){
+                    pooledObject.destory();
+                    removeList.add(pooledObject);
+                }
+            }
+        }
+        Iterator itr = removeList.iterator();
+        while(itr.hasNext()) {
+            PooledObject<T> pooledObject = (PooledObject) itr.next();
+            this.destroy(pooledObject);
+        }
     }
 
     //定时处理闲置队列中闲置过久的对象
-    public void evict(){}
+    public void evict() {
+
+    }
 
 
     //销毁创建的对象
     public void destroy(PooledObject<T> p) throws Exception {
         p.destory();
         this.freeObjects.remove(p);
-        this.allObjects.remove(p);
+        this.allObjects.remove(p.getObject());
         factory.destroyObject(p);
     }
+
     //创建新的对象
-    public PooledObject<T> create() throws Exception{
+    public PooledObject<T> create() throws Exception {
         int localMaxTotal = this.getMaxTotal();   //设置对象池大小，若为负则设为最大整数
-        if(localMaxTotal < 0){
+        if (localMaxTotal < 0) {
             localMaxTotal = Integer.MAX_VALUE;
         }
         long localStartTimeMillis = System.currentTimeMillis();   //开始时间
@@ -229,10 +272,10 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         Boolean createFlag = null;    //是否可以获取对象
 
         //以下判断当前线程是否可以创建对象
-        while(createFlag == null){
-            synchronized(this.makeObjectCountLock) {
+        while (createFlag == null) {
+            synchronized (this.makeObjectCountLock) {
                 long newCreateCount = this.createCount.incrementAndGet();
-                if (newCreateCount > (long)localMaxTotal) {  //如果这次创建之后超过对象池上限
+                if (newCreateCount > (long) localMaxTotal) {  //如果这次创建之后超过对象池上限
                     this.createCount.decrementAndGet();
                     if (this.makeObjectCount == 0L) {    // 无其他线程正在调用makeObject()方法，意味着没有机会再创建对象，只能等待其他对象被归还
                         createFlag = Boolean.FALSE;     // 跳出循环
@@ -253,31 +296,31 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         if (!createFlag) {  //不可创建对象
             return null;
         } else {           //可创建对象
-                PooledObject<T> p;
-                try {
-                    p = this.factory.createObject();
-                } catch (Throwable e) {
-                    this.createCount.decrementAndGet();
-                    throw e;
-                } finally {
-                    //当前线程创建结束，唤醒其他等待线程
-                        synchronized(this.makeObjectCountLock) {
-                            --this.makeObjectCount;
-                            this.makeObjectCountLock.notifyAll();
-                        }
+            PooledObject<T> p;
+            try {
+                p = this.factory.createObject();
+            } catch (Throwable e) {
+                this.createCount.decrementAndGet();
+                throw e;
+            } finally {
+                //当前线程创建结束，唤醒其他等待线程
+                synchronized (this.makeObjectCountLock) {
+                    --this.makeObjectCount;
+                    this.makeObjectCountLock.notifyAll();
                 }
-                this.createdCount.incrementAndGet();    //将创建总数增加
-                this.allObjects.put(p.getObject(), p);   //将对象放入allObjects
-                return p;
             }
+            this.createdCount.incrementAndGet();    //将创建总数增加
+            this.allObjects.put(p.getObject(), p);   //将对象放入allObjects
+            return p;
         }
+    }
 
     public void close() {
         closed = true;
     }
 
-    public void clear() throws Exception{
-        for(PooledObject p = (PooledObject)this.freeObjects.poll(); p != null; p = (PooledObject)this.freeObjects.poll()) {
+    public void clear() throws Exception {
+        for (PooledObject p = (PooledObject) this.freeObjects.poll(); p != null; p = (PooledObject) this.freeObjects.poll()) {
             this.destroy(p);
         }
 
